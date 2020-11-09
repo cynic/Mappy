@@ -2,6 +2,12 @@
 
 This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
 
+## Quick-start
+
+Compile RSuite's LESS to CSS: `.\node_modules\.bin\lessc --js .\node_modules\rsuite\lib\styles\index.less src\rsuite.css`
+Type in `npm run start`.
+
+
 ## Available Scripts
 
 In the project directory, you can run:
