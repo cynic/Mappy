@@ -1,8 +1,6 @@
 /* eslint-disable */ 
 import React, { StrictMode } from "react"; // import from react
-//import { Loader } from '@googlemaps/js-api-loader'
 
-//const API_KEY = process.env.GAPI
 const initSqlJs = require('sql.js');
 const fs = require('fs');
 const ExcelJS = require('exceljs');
@@ -10,13 +8,6 @@ const dbFile = 'spots.db';
 const geocodeRateLimitMS = 2000;
 
 const google = window.google;
-
-/*
-const loader = new Loader({
-  apiKey: API_KEY,
-  version: 'weekly'
-});
-*/
 
 const Status = Object.freeze({
   Loading: 1,
@@ -52,10 +43,6 @@ function findColumn(worksheet, headerRow, header) {
 }
 
 async function readExcel(headerRow, searchTerms, workbook) {
-  //const workbook = new ExcelJS.Workbook();
-  //await workbook.xlsx.readFile('cases.xlsx');
-  //const raw = await fs.promises.readFile('cases.xlsx');
-  //await workbook.xlsx.load(raw.buffer);
   const worksheet = workbook.worksheets[0];
   const columns = searchTerms.map((st) => findColumn(worksheet, headerRow, st));
   if (columns.some((x) => x == null)) {
@@ -127,7 +114,6 @@ function validateDatum(db, datum, cityCenter, done) {
     }
     if (rest.length == 0) {
       console.log(`Geocode FAILED for base '${datum.original}'.`);
-      //datum.status = Status.NotFound;
       done(datum.id);
       return;
     }
@@ -151,7 +137,6 @@ function validateDatum(db, datum, cityCenter, done) {
           ':ver': candidate,
           ':id': datum.id
         });        
-        //datum.status = Status.Geocoded;
         console.log(`Geocoded: ${datum.original} ---AS---> ${candidate}`);
         persist(db);
         done(datum.id);
