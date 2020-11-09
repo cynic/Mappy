@@ -7,7 +7,7 @@ const initSqlJs = require('sql.js');
 const fs = require('fs');
 const ExcelJS = require('exceljs');
 const dbFile = 'spots.db';
-const geocodeRateLimitMS = 1100;
+const geocodeRateLimitMS = 2000;
 
 const google = window.google;
 
@@ -24,14 +24,21 @@ const Status = Object.freeze({
   NotFound: 3
 });
 
-// latitude changes from north-south
-// longitude changes from east-west
-const west = { lng: 26.484543 }
-const east = { lng: 26.610538 }
-const north = { lat: -33.255697 }
-const south = { lat: -33.373776 }
-const cityCenter = { lat: -33.30422, lng: 26.53276 }
-let bounds;
+// latitude decreases from north-south
+// longitude decreases from east-west
+
+function makeCity(cityName, done) {
+  const geocoder = new google.maps.Geocoder();
+  geocoder.geocode( { 'address': `${cityName}, South Africa`, 'region': 'za' }, (results, status) => {
+    if (status == 'OK') {
+      const lat = results[0].geometry.location.lat();
+      const lng = results[0].geometry.location.lng();
+      done({ lat: lat, lng: lng });
+    } else {
+      done(null);
+    }
+  });
+}
 
 function findColumn(worksheet, headerRow, header) {
   const row = worksheet.getRow(headerRow);
@@ -80,7 +87,7 @@ function generateTokens() {
   setTimeout(generateTokens, geocodeRateLimitMS);
 }
 
-function validateDatum(db, datum, done) {
+function validateDatum(db, datum, cityCenter, done) {
   if (datum.status != Status.Loading) {
     return;
   }
@@ -99,6 +106,16 @@ function validateDatum(db, datum, done) {
     ', Makhanda 6140, South Africa',
     ', Makhanda 6140, Eastern Cape, South Africa'
   ];
+  // latitude decreases from north-south
+  // longitude decreases from east-west
+  const west = cityCenter.lng - 0.1;
+  const east = cityCenter.lng + 0.1;
+  const north = cityCenter.lat + 0.1;
+  const south = cityCenter.lat - 0.1;
+  const bounds = new google.maps.LatLngBounds(
+    { lat: south, lng: west }, // sw
+    { lat: north, lng: east } // ne
+  );
   const geocoder = new google.maps.Geocoder();
   function tryWithSuffix(rest) {
     if (bucket > 0) {
@@ -112,14 +129,25 @@ function validateDatum(db, datum, done) {
       console.log(`Geocode FAILED for base '${datum.original}'.`);
       //datum.status = Status.NotFound;
       done(datum.id);
+      return;
     }
     const candidate = datum.original + rest[0];
     geocoder.geocode( { 'address': candidate, 'bounds': bounds, 'region': 'za' }, (results, status) => {
       if (status == 'OK') {
+        const lat = results[0].geometry.location.lat();
+        const lng = results[0].geometry.location.lng();
+        if (lat == cityCenter.lat && lng == cityCenter.lng) {
+          console.log(`Geocode resolved to city center for '${candidate}'`);
+          return tryWithSuffix(rest.slice(1));
+        }
+        if (lng > east || lng < west || lat > north || lat < south) {
+          console.log(`Geocode resolved to a location outside the city bounds (candidate was: '${candidate}')`)
+          return tryWithSuffix(rest.slice(1));
+        }
         const statement = db.prepare("update location set lat=:lat, lng=:lng, verified=:ver where id=:id");
         statement.run({
-          ':lat': results[0].geometry.location.lat(),
-          ':lng': results[0].geometry.location.lng(),
+          ':lat': lat,
+          ':lng': lng,
           ':ver': candidate,
           ':id': datum.id
         });        
@@ -127,17 +155,18 @@ function validateDatum(db, datum, done) {
         console.log(`Geocoded: ${datum.original} ---AS---> ${candidate}`);
         persist(db);
         done(datum.id);
+        return;
       } else {
         console.log(`Geocode unsuccessful for '${candidate}': ${status}`);
-        tryWithSuffix(rest.slice(1));
+        return tryWithSuffix(rest.slice(1));
       }
     });
   }
   tryWithSuffix(suffixes);
 }
 
-function validateData(db, data, done) {
-  data.map((v) => validateDatum(db, v, done));
+function validateData(db, data, cityCenter, done) {
+  data.map((v) => validateDatum(db, v, cityCenter, done));
 }
 
 function persist(db) {
@@ -166,6 +195,7 @@ export default class Example extends React.Component {
       db: null,
       mapShapes: [],
       loading: [], // ids that are still being assessed
+      currentCity: null,
     };
   }
 
@@ -191,7 +221,7 @@ export default class Example extends React.Component {
           v.forEach(([addr,dt]) => ins.run({ ':orig': addr, ':when': dt ? dt.toISOString() : null }));
           this.updateLoadingFromDB(this.state.db);
           this.updateAddresses((o) => statusFor(this.state.loading, o));
-          validateData(this.state.db, this.state.addresses, (v) => {
+          validateData(this.state.db, this.state.addresses, this.state.currentCity, (v) => {
             const newLoading = this.state.loading.filter(x => x.id != v);
             this.setState({loading: newLoading});
             this.updateAddresses((o) => statusFor(newLoading, o));
@@ -244,10 +274,8 @@ export default class Example extends React.Component {
   componentDidMount() {
     generateTokens();
     const map = new google.maps.Map(document.getElementById('map'), {
-      center: cityCenter,
       zoom: 13,
     });
-    bounds = new google.maps.LatLngBounds({lat: south.lat, lng:west.lng}, {lat:north.lat, lng:east.lng});
     this.setState({ map : map });
     var filebuffer = null;
     if (fs.existsSync(dbFile)) {
@@ -262,13 +290,7 @@ export default class Example extends React.Component {
       console.log('Connected to DB.');
       db.run('create table if not exists location ( id integer primary key autoincrement, original text, verified text, lat real, lng real, whenfound text )');
       this.setState({db : db});
-      this.updateAddresses((o) => o.lat || o.lng ? Status.Geocoded : Status.Loading);
-      validateData(this.state.db, this.state.addresses, (v) => {
-        const newLoading = this.state.loading.filter(x => x.id != v);
-        this.setState({loading: newLoading});
-        this.updateAddresses((o) => statusFor(newLoading, o));
-      });
-})
+    })
     .catch(err => console.log(err));
   }
 
@@ -300,19 +322,53 @@ export default class Example extends React.Component {
     }
   }
 
+  chooseNewCity() {
+    const name = document.getElementById('cityName').value;
+    makeCity(name, (c) => {
+      console.log(c);
+      if (c != null) {
+        this.state.map.setCenter(c);
+        this.setState({ currentCity : c});
+        this.updateAddresses((o) => o.lat || o.lng ? Status.Geocoded : Status.Loading);
+        validateData(this.state.db, this.state.addresses, c, (v) => {
+          const newLoading = this.state.loading.filter(x => x.id != v);
+          this.setState({loading: newLoading});
+          this.updateAddresses((o) => statusFor(newLoading, o));
+        });
+      } else {
+        alert(`I couldn't find the city '${name}'.  Please check the spelling.`);
+      }
+    });
+  }
+
+  topBlock () {
+    if (this.state.currentCity) {
+      return (
+        <div>
+          <label htmlFor="xlsxFile">Upload a file with NEW entries: </label>
+          <input type="file" name="xlsx" id="xlsxFile" />
+          <button type="submit" onClick={() => this.uploadFile()}>Upload XLSX (Excel) file</button>
+          <button onClick={() => this.setState({ currentCity: null })}>Switch cities</button>
+        </div>
+      )
+    } else {
+      return (
+        <div>
+          <input type="text" id="cityName"></input>
+          <button onClick={() => this.chooseNewCity() }>Choose this city</button>
+        </div>
+      )
+    }
+  }
+
   render() {
     // all Components must have a render method
-    //validateData(this.state.db, this.state.addresses, this.forceUpdate);
     return (
       <div style={{ flex: 1, justifyContent: "left", backgroundColor: "#6d2077aa", overflowY: 'hidden' }}>
         {/* all your other components go here*/}
         <div style={{ height: "50vh" }} id="map"></div>
         <div style={{ height: '50vh' }}>
-          <div>
-            <label htmlFor="xlsxFile">Upload a file with NEW entries: </label>
-            <input type="file" name="xlsx" id="xlsxFile" />
-            <button type="submit" onClick={() => this.uploadFile()}>Upload XLSX (Excel) file</button>
-          </div>
+          {this.topBlock()}
           <div style={{ margin: '4px' }}>{this.state.addresses.length} addresses known.  {this.state.loading.length} remain to be mapped.</div>
           <div style={{ overflowY: 'auto', height: '42vh' }}>
             <ul>
