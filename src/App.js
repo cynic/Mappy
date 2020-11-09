@@ -1,5 +1,6 @@
 /* eslint-disable */ 
 import React, { StrictMode } from "react"; // import from react
+import { RangeSlider } from 'rsuite';
 
 const initSqlJs = require('sql.js');
 const fs = require('fs');
@@ -170,6 +171,14 @@ function statusFor(loading, o) {
   return Status.NotFound;
 }
 
+function datesFromAddresses(addrList) {
+  const s = new Set(
+    addrList
+    .map(({whenfound}) => whenfound) 
+    .filter(v => v)
+  );
+  return [...s];
+}
 
 export default class Example extends React.Component {
   constructor(props) {
@@ -181,6 +190,8 @@ export default class Example extends React.Component {
       mapShapes: [],
       loading: [], // ids that are still being assessed
       currentCity: null,
+      startDate: new Date(0),
+      endDate: new Date(),
     };
   }
 
@@ -215,23 +226,19 @@ export default class Example extends React.Component {
       })
     };
   }
-  
-  updateAddresses(statusFunc) {
-    const sel = this.state.db.prepare('select id, original, whenfound, lat, lng from location');
-    var addrList = [];
-    var loading = [];
-    while (sel.step()) {
-      const o = sel.getAsObject();
-      const status = statusFunc(o);
-      addrList.push( Object.assign(o, { status: status }) );
-      if (status == Status.Loading) {
-        loading.push(o.id);
-      }
-    }
-    this.setState({ addresses: addrList.sort((a,b) => a.whenfound < b.whenfound ? -1 : a.whenfound == b.whenfound ? 0 : 1), loading: loading });
-    var newShapes = this.state.mapShapes.slice();
-    addrList.forEach(({id,lat,lng,status}) => {
+
+  updateMapShapes() {
+    // clear all the old ones away.
+    this.state.mapShapes.forEach((v) => v.shape.setMap(null)); // goodbye.
+    // now put on the new ones.
+    var newShapes = [];
+    this.state.addresses.forEach(({id,lat,lng,status,whenfound}) => {
       if (status == Status.Geocoded && newShapes.findIndex(({ids}) => ids.includes(id)) == -1) {
+        if (whenfound) {
+          if (whenfound < this.state.startDate || whenfound > this.state.endDate) {
+            return;
+          }
+        }
         const foundIdx = newShapes.findIndex(({key}) => key.lat == lat && key.lng == lng);
         if (foundIdx == -1) {
           const c = new google.maps.Circle({
@@ -253,6 +260,24 @@ export default class Example extends React.Component {
       }
     });
     this.setState({ mapShapes: newShapes });
+  }
+
+  updateAddresses(statusFunc) {
+    const sel = this.state.db.prepare('select id, original, verified, whenfound, lat, lng from location');
+    var addrList = [];
+    var loading = [];
+    while (sel.step()) {
+      var o = sel.getAsObject();
+      o.whenfound = o.whenfound ? new Date(Date.parse(o.whenfound)) : null;
+      const status = statusFunc(o);
+      addrList.push( Object.assign(o, { status: status }) );
+      if (status == Status.Loading) {
+        loading.push(o.id);
+      }
+    }
+    addrList.sort((a,b) => a.whenfound < b.whenfound ? -1 : a.whenfound == b.whenfound ? 0 : 1);
+    this.setState({ addresses: addrList, loading: loading });
+    this.updateMapShapes();
     //console.log(addrList);
   }
 
@@ -310,7 +335,6 @@ export default class Example extends React.Component {
   chooseNewCity() {
     const name = document.getElementById('cityName').value;
     makeCity(name, (c) => {
-      console.log(c);
       if (c != null) {
         this.state.map.setCenter(c);
         this.setState({ currentCity : c});
@@ -348,13 +372,29 @@ export default class Example extends React.Component {
 
   render() {
     // all Components must have a render method
+    const dates = datesFromAddresses(this.state.addresses);
     return (
       <div style={{ flex: 1, justifyContent: "left", backgroundColor: "#6d2077aa", overflowY: 'hidden' }}>
         {/* all your other components go here*/}
         <div style={{ height: "50vh" }} id="map"></div>
         <div style={{ height: '50vh' }}>
           {this.topBlock()}
-          <div style={{ margin: '4px' }}>{this.state.addresses.length} addresses known.  {this.state.loading.length} remain to be mapped.</div>
+          <div>
+            <span>Showing {this.state.startDate.toDateString()} - {this.state.endDate.toDateString()}</span>
+            <RangeSlider
+              disabled={dates.length == 0}
+              style={{marginLeft: '10px', marginRight: '10px'}}
+              min={0}
+              max={dates.length - 1}
+              onChange={([a,b]) => {
+                this.setState({ startDate: dates[a], endDate: dates[b] });
+                this.updateMapShapes();
+
+              }}
+              tooltip={false}
+            />
+          </div>
+          <div style={{ margin: '4px' }}>{this.state.loading.length} / {this.state.addresses.length} still loading...</div>          
           <div style={{ overflowY: 'auto', height: '42vh' }}>
             <ul>
             {
