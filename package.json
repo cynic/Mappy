@@ -60,6 +60,7 @@
   },
   "devDependencies": {
     "copy-webpack-plugin": "^6.3.0",
-    "craco": "0.0.3"
+    "craco": "0.0.3",
+    "less": "^3.12.2"
   }
 }
